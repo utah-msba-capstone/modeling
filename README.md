@@ -1,3 +1,3 @@
 # Modeling
 
-Files in support of the modeling tutorial in MSBA capstone.
+Files to support the modeling tutorial in MSBA capstone.
