@@ -1,0 +1,50 @@
+---
+title: "Modeling"
+format: 
+  revealjs:
+    logo: Accessibility DESB.png
+    scrollable: false
+    incremental: false
+    footer: "https://github.com/utah-msba-capstone/modeling.git"
+    chalkboard: true
+---
+
+## Use Cases
+
+- Predict revenue for targeted marketing of customers. Modeling goal:  *predictive performance*.
+
+- Evaluate high revenue channel and traffic sources to inform marketing expenditure. Modeling goal:  *inference.*
+
+- Identify aberrations from expected revenue for early warning of operational problems: *process control.*
+
+## Agenda
+
+- Discuss options for how to approach these 3 projects.
+- Give you some starter code.
+- Identify possible challenges and ideas for improvement.
+
+## Tools
+
+- *Rstudio or Google Colab*. (I find RStudio faster for executing queries.  If you want to use Python then Colab might be the better choice.) 
+- *Linear regression* for inference.
+- *XGBoost* for prediction using the `caret` package (or auto ML via h20).
+- *Prophet* or *Arima* for process control using time-series forecasting.
+
+## Approach
+
+- Data preparation:  
+    - aggregated by user for predictions
+    - aggregated by day for time series
+    - inference will require data at the session level
+    
+- Cross validation for revenue prediction and forecasting (not relevant for inference).
+
+## Assignment
+
+- Pick one of the problems and see what progress you can make on getting business relevant results.
+
+- Represent your results in a slide deck that will support a brief (~ 5 minute) presentation.
+
+- Powerpoint is fine but I highly recommend that you check out the new Quarto jsReveal presentations, which can be compiled to HTML for submission.
+
+- Lastly consider posting the work you do to github, as part of an accumulating online portfolio of your data analytic work.

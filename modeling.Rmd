@@ -1,0 +1,239 @@
+---
+title: "Modeling"
+output: 
+  html_document:
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(caret)
+library(bigrquery)
+library(tidyverse)
+library(forecast)
+library(prophet)
+library(lubridate)
+```
+
+
+## Inference
+
+Evaluate high revenue channel and traffic sources to inform marketing expenditure. 
+
+The goal is to use linear regression to assess the statistical significance of channel/source coefficients.
+
+The data will be selected with the idea of including *covariates*---control variables---that could conceivably influence (or be correlated with) revenue. If we were to find a relationship between a particular channel and revenue, we would like to be able to say that it exists independently of other possible influences such as seasonal ones, like time of day or day of week.
+
+Here is a query for 4 months of data.  No test set is needed.
+
+```{r}
+q1 <- "SELECT
+  fullVisitorId,
+  visitId,
+  date,
+  totals.pageviews,
+  channelGrouping,
+  totals.transactionRevenue,
+  visitStartTime,
+  totals.visits,
+  trafficSource.source,
+  trafficSource.medium,
+  device.browser,
+  device.isMobile,
+  geoNetwork.country,
+  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+  WHERE _table_suffix between '20170101' and '20170401'"
+  
+channels_query <- bq_project_query('capstone-359314',q1) 
+channels_download <- bq_table_download(channels_query)
+```
+
+Format the data, leaving the grain at one row per session:
+
+```{r}
+channels <- channels_download |>
+  mutate(id = paste0(fullVisitorId,visitId),
+         time = as_datetime(visitStartTime),
+         ymd = ymd(date),
+         day_of_week = wday(ymd, label = T),
+         hours = hour(time),
+         rev = ifelse(is.na(transactionRevenue), 0, transactionRevenue),
+         transaction = ifelse(rev > 0, 1, 0)) |>
+  distinct(id, .keep_all = TRUE)
+
+glimpse(channels)
+```
+
+Modeling:
+
+```{r}
+lm(log(rev + 1)~ channelGrouping, data = channels) %>% # log + 1 transformation
+  summary
+```
+
+The data, as we saw during EDA, is zero inflated, which is likely making it hard to find a signal.  Perhaps we should remove the 0s. Notice that this changes the objective subtly. We would then be modeling the relationship between channels and revenue *among those who bought*. Taken out of the analysis is *whether* channels induce people differently to buy in the first place.
+
+```{r}
+lm(log(rev)~ channelGrouping, data = filter(channels, rev > 0)) %>% # filter for > 0
+  summary
+```
+Note:  `(Other)` is the reference level here.
+
+To do:
+
+1. Add covariates. (Are there other relevant variables you could pull in from BigQuery?) Do these results hold up after adding other possible explanations of revenue?
+
+2. Create a model of `sources`.
+
+3. What would your recommendation be for where to focus advertising?
+
+## Prediction
+
+The goal is to predict revenue for targeted marketing of customers. We'll need a train set and test set.  I'm sure the features I've chosen could be improved upon.
+
+Note that some of these variables are categorical, with lots of levels.  We will label encode these.
+
+```{r}
+train <- "SELECT
+  fullVisitorId,
+  visitId,
+  visitNumber,
+  totals.pageviews,
+  channelGrouping,
+  totals.transactionRevenue,
+  trafficSource.source,
+  trafficSource.medium,
+  trafficSource.isTrueDirect,
+  trafficSource.keyword,
+  trafficSource.referralPath,
+  device.browser,
+  device.operatingSystem,
+  device.deviceCategory,
+  device.isMobile,
+  geoNetwork.country,
+  geoNetwork.networkDomain,
+  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+  WHERE _table_suffix between '20170101' and '20170201'"
+  
+train_query <- bq_project_query('capstone-359314',train) 
+train_download <- bq_table_download(train_query)
+```
+
+Next step is to aggregate to the visitorID level, and create some statistical features. The following code chunk is just an example---more could be done!
+
+```{r}
+find_mode <- function(x) names(which.max(table(x)))
+
+train <- train_download |>
+  mutate(id = paste0(fullVisitorId,visitId)) |>
+  distinct(id, .keep_all = TRUE) |>
+  mutate(rev = ifelse(is.na(transactionRevenue), 0, transactionRevenue)) |>
+  group_by(fullVisitorId) |>
+  summarize(visits = max(visitNumber),
+            min_pageviews = min(pageviews),
+            max_pageviews = max(pageviews),
+            mean_pageviews = mean(pageviews),
+            sum_pageviews = sum(pageviews),
+            channel = find_mode(channelGrouping),
+            source = find_mode(source),
+            medium = find_mode(medium),
+            browser = find_mode(browser),
+            country = find_mode(country),
+            network = find_mode(networkDomain),
+            rev = sum(rev)) |>
+  ungroup() |>
+  mutate_if(is.character, function(x) as.numeric(factor(x))) # label encode categorical features
+
+
+  
+```
+
+I leave it you to do some exploration on this transformed dataset.
+
+We'll use caret to fit a model.  The nice thing about caret is it includes automatic cross-validation to select hyperparameters and estimate test set error. The following code takes awhile!
+
+```{r}
+
+x <- select(train, -fullVisitorId, -rev)
+y <- log(train$rev+1)
+
+gbm_mod <- train(x, y, method = 'gbm')
+```
+
+Here are the performance metrics:
+
+```{r}
+gbm_mod
+```
+
+Here are predicted values vs. observed in the train set:
+
+```{r}
+data.frame(observed = log(train$rev + 1),
+           predicted = predict(gbm_mod)) |>
+  ggplot(aes(observed, predicted)) +
+  geom_point() +
+  geom_smooth(se = F)
+  labs(titles = "Observed vs. predicted revenue per visitor")
+
+```
+
+To do:
+
+1. Create a test set by analogy with the train set and test the model on new data.
+
+2. Improve the model.  Can you beat estimated out-of-sample 1.63 RMSE?
+
+3. Ideas for improvement:
+
+    - Try different algorithms, or different hyperparameter values
+    - Import and create additional features 
+    - Create a classification model of conversion to use for post-processing of predicted revenue (multiply predicted revenue by probability of conversion)
+    
+
+
+
+## Process control
+
+The goal here is to identify aberrations from expected revenue for early warning of operational problems using forecasts from a time series model.
+
+This example will use the same `channels` data used above but we need to aggregate revenue to the day. I'll use the `prophet()` function from the `prophet` package. (See  https://facebook.github.io/prophet/). `prophet` requires two columns: `ds` for dates and `y` for the series.
+
+```{r}
+(ts <- channels |>
+  group_by(ds = ymd) |>
+  summarize(y = sum(rev)))
+
+```
+
+Plot: 
+
+```{r}
+ggplot(ts, aes(ds, y)) +
+  geom_line() +
+  labs(title = "Total revenue by day")
+```
+There is pronounced weekly seasonality.  
+
+Model:
+
+```{r}
+ts_model <- prophet(ts)
+future <- make_future_dataframe(ts_model, periods = 30)
+prediction <- predict(ts_model, future)
+plot(x = ts_model, fcst = prediction)
+
+```
+
+This model definitely captures the weekly seasonality in the data, but does somewhat better with low revenue.  That might be OK for this use case, if the purpose is to identify unusually low revenue. However, the model's lower bound dips below zero revenue every week, so it might not be accurate enough to ever identify unusually low revenue, which was our original concept. 
+
+To do: 
+
+- Read the help pages on prophet. Are there additions to this model that could improve its forecasts? For example, you could add a regressor like daily `pageviews` - 7 days or include holidays? (`pageviews` itself wouldn't work because you wouldn't know daily `pageviews` until *after* the day you were attempting to forecast.) See https://facebook.github.io/prophet/docs/seasonality,_holiday_effects,_and_regressors.html.
+
+- Develop a test set and calculate the model's forecasting error. Given the model's performance, could it successfully be used as intended?
+
+- Develop models for each SKU or product category. Would this granular approach work better than a model that forecasts overall revenue? 
+
+
